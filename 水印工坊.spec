@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 import PySide6
+from version import windows_version_info
 qt_folder = Path(PySide6.__file__).resolve().parent
 
 a = Analysis(
@@ -12,7 +13,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'pymupdf4llm', 'pymupdf.layout', 'numpy', 'scipy', 'cv2', 'onnxruntime'],
+    excludes=['PyInstaller', 'PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'pymupdf4llm', 'pymupdf.layout', 'numpy', 'scipy', 'cv2', 'onnxruntime'],
     noarchive=False,
     optimize=0,
 )
@@ -51,4 +52,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['app.ico'],
+    version=windows_version_info(),
 )

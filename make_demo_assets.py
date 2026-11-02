@@ -1,6 +1,7 @@
 """Generate shareable screenshots using synthetic document content only."""
 from pathlib import Path
 import tempfile
+from dataclasses import replace
 
 from PIL import Image, ImageDraw, ImageFont
 from PySide6.QtCore import QSettings, Qt
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QColorDialog, QScrollArea
 
 from main import MainWindow, configure_appearance, configure_language
 from engine import Options
+from pdf_watermark_dialog import PdfWatermarkDialog
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / 'docs/images'
@@ -47,10 +49,28 @@ def generate():
         folder = Path(temporary)
         source = folder / '演示方案.png'
         create_demo(source)
-        window = MainWindow(settings=QSettings(str(folder/'settings.ini'), QSettings.Format.IniFormat), interactive=False)
+        window = MainWindow(settings=QSettings(str(folder/'settings.ini'), QSettings.Format.IniFormat), interactive=False,
+                            cache_dir=folder/'watermarks')
         window.show()
         window.add_files([str(source)])
         window.apply_options(Options(size=88, columns=3, rows=2, opacity=24, color='#7869ca'))
+        logo = Image.new('RGBA', (300, 150))
+        drawing = ImageDraw.Draw(logo)
+        drawing.rounded_rectangle((6,6,294,144), radius=28, fill=(108,92,231,230))
+        drawing.text((55,23),'W',font=ImageFont.truetype('C:/Windows/Fonts/arialbd.ttf',90),fill='white')
+        drawing.text((173,57),'示例',font=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',36),fill='white')
+        logo.save(folder/'示例徽标.png')
+        seal = Image.new('RGBA',(256,256))
+        drawing = ImageDraw.Draw(seal)
+        drawing.ellipse((9,9,247,247),outline=(205,85,105,235),width=9)
+        drawing.ellipse((23,23,233,233),outline=(205,85,105,190),width=2)
+        drawing.text((61,64),'示例',font=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',66),fill=(205,85,105,235))
+        drawing.text((58,155),'仅供演示',font=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',34),fill=(205,85,105,235))
+        seal.save(folder/'示例图章.png')
+        window.add_watermark_images([str(folder/'示例徽标.png'),str(folder/'示例图章.png')])
+        window.image_marks = [replace(window.image_marks[0],center_x=.83,center_y=.79,width_ratio=.15,opacity=90),
+                              replace(window.image_marks[1],center_x=.80,center_y=.16,width_ratio=.19,opacity=95)]
+        window.reload_images(window.image_marks[0].uid)
         window.folder_edit.setText('请选择输出文件夹')
         window.status.setText('演示界面  ·  所有文件内容均为生成的示例。')
         app.processEvents()
@@ -58,6 +78,21 @@ def generate():
         window.text_edit.clearFocus()
         app.processEvents()
         window.grab().save(str(OUTPUT / 'desktop.png'))
+        window.grab().save(str(OUTPUT / 'image-watermarks.png'))
+        import pymupdf as fitz
+        pdf_source = folder/'水印来源示例.pdf'
+        with fitz.open() as document:
+            for index in range(3):
+                page = document.new_page(width=300,height=200)
+                page.insert_text((28,48),f'WATERMARK / PAGE {index+1}',fontsize=18,color=(.42,.36,.8))
+                page.draw_rect(fitz.Rect(28,75,270,155),color=(.42,.36,.8),fill=(.93,.92,.98))
+            document.save(pdf_source)
+        picker = PdfWatermarkDialog(pdf_source,window)
+        picker.page_spin.setValue(2)
+        picker.show()
+        app.processEvents()
+        picker.grab().save(str(OUTPUT/'pdf-page-picker.png'))
+        picker.reject()
         window.options_panel.grab().save(str(OUTPUT / 'controls.png'))
         scroll = window.options_panel.findChild(QScrollArea)
         scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())

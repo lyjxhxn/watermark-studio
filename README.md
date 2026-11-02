@@ -1,10 +1,10 @@
-# 水印工坊 · Watermark Studio
+# 水印工坊 v1.1.0 · Watermark Studio
 
-Windows 桌面水印工具，支持 PDF 和常见图片格式。自定义文字、字体、大小、透明度和排列方式，实时预览、批量导出。
+Windows 桌面水印工具，支持 PDF 和常见图片格式。文字、透明图片和所选 PDF 页面可以同时叠加，在预览中拖动位置、拉动四角等比缩放，实时预览、批量导出。
 
 水印直接与页面内容合成为图片像素，PDF 每页包含一张不透明图片，没有独立的水印文字、注释或水印图层。全部文件在本机处理。
 
-**[下载 Windows EXE](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.0.0/watermark-studio-v1.0.0-windows-x64.exe)** · **[下载完整便携包](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.0.0/watermark-studio-v1.0.0-windows-x64.zip)** · [所有版本](https://github.com/lyjxhxn/watermark-studio/releases)
+**[下载 Windows EXE](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.1.0/watermark-studio-v1.1.0-windows-x64.exe)** · **[下载完整便携包](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.1.0/watermark-studio-v1.1.0-windows-x64.zip)** · [所有版本](https://github.com/lyjxhxn/watermark-studio/releases)
 
 ![水印工坊桌面界面，使用软件生成的演示内容](docs/images/desktop.png)
 
@@ -12,6 +12,10 @@ Windows 桌面水印工具，支持 PDF 和常见图片格式。自定义文字�
 
 - PDF、PNG、JPG/JPEG、BMP、WebP、TIF/TIFF，支持批量添加和拖放。
 - 自定义水印文字，支持换行，使用本机已安装字体。
+- 文字、图片分别开关；支持多张透明 PNG 等静态图片，独立透明度、位置、大小和叠放顺序。
+- PDF 也能作为水印来源：单页直接添加，多页先预览并选择其中一页，可重复添加不同页面。
+- 图片可在画布中拖动及四角等比例缩放，布局按相对位置和比例应用到选定页及批量文件。
+- 图片自动复制到本机软件数据目录并保存布局，原图移动或删除后仍可继续使用。
 - 调整文字大小、颜色、不透明度、角度；支持居中或重复平铺，分别设置行数与列数。
 - PDF 页码选择；未加水印的页仍保留，整份 PDF 均按所选 DPI 合成为图片。
 - 分辨率支持 72–600 DPI，默认 100 DPI，可使用滑块或数字输入。
@@ -24,11 +28,23 @@ Windows 桌面水印工具，支持 PDF 和常见图片格式。自定义文字�
 ## 使用
 
 1. 从 [Releases](https://github.com/lyjxhxn/watermark-studio/releases/latest) 下载 EXE，双击运行；无需安装 Python。
-2. 添加 PDF 或图片，设置水印文字与样式。
+2. 添加待处理的 PDF 或图片，在“文字”页设置文字水印，在“图片 / PDF”页添加 Logo、图片或指定 PDF 页面。
 3. 查看预览。右侧向下滚动可见分辨率、压缩强度和 PDF 页码设置。
 4. 选择输出文件夹，点击“开始批量导出”。
 
 完整说明见 [使用说明](使用说明.md)。发布页同时提供 SHA-256 校验文件。
+
+### 多张图片与 PDF 页面水印
+
+在“图片 / PDF”页选择一张或多张静态图片或 PDF。多页 PDF 会打开选页窗口，预览后指定其中一页；单页 PDF 直接添加。选中 PDF 页面会转换为本机图片副本，保留未绘制区域的透明背景和页面自身内容，不会自动去除页面中绘制的白色背景。转换按最高 300 DPI、最长边 4096 像素生成。
+
+![PDF 水印来源选页窗口](docs/images/pdf-page-picker.png)
+
+点击列表或画布中的水印后，可拖动移动、拉动四角等比缩放，也可输入占页面宽度的百分比。列表顶部位于最前方，“上移一层 / 下移一层”调整顺序，勾选框控制是否参与导出。
+
+图片保留自身透明通道，再叠加独立不透明度。文字先绘制，图片随后叠加；图片布局统一应用到批量文件。未包含在 PDF 水印页码中的页面不显示图片水印或编辑手柄。导出文件中不会包含选框、缩放手柄或独立水印对象。
+
+关闭重开会恢复图片和布局；图片副本仅保存在本机软件数据目录。缺失或损坏的副本会标红并阻止遗漏导出，可移除后重新添加。恢复默认设置会清空图片列表并清理无引用副本，原始图片保持不变。
 
 ### 分辨率与压缩
 
@@ -78,6 +94,8 @@ python package_release.py
 | `main.py` | 桌面界面、预览与批量任务 |
 | `engine.py` | PDF/图片合成与导出 |
 | `single_instance.py` | 单实例锁与窗口激活通信 |
+| `image_watermarks.py`、`watermark_canvas.py` | 图片缓存、统一布局与交互画布 |
+| `version.py` | 界面、EXE 属性与发布包使用的版本信息 |
 | `assets/` | SVG 控件箭头 |
 | `tests/` | 导出和单实例进程检查 |
 | `水印工坊.spec`、`build.ps1` | Windows EXE 打包 |

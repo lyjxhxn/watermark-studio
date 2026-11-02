@@ -6,6 +6,7 @@ import sys
 import subprocess
 import urllib.request
 import zipfile
+from version import APP_VERSION
 
 root = Path(__file__).resolve().parent
 subprocess.run([sys.executable, str(root / 'make_demo_assets.py')], check=True)
@@ -33,7 +34,7 @@ for name, url in [
 ]:
     target = licenses / name
     if not target.exists():
-        request = urllib.request.Request(url, headers={'User-Agent': 'WatermarkStudio/1.0'})
+        request = urllib.request.Request(url, headers={'User-Agent': 'WatermarkStudio/' + APP_VERSION})
         with urllib.request.urlopen(request, timeout=20) as response:
             target.write_bytes(response.read())
 
@@ -43,7 +44,8 @@ for name in ['LICENSE', 'README.md', '使用说明.md', 'THIRD_PARTY_NOTICES.md'
 
 source_folder = release / '源码'
 source_folder.mkdir(exist_ok=True)
-for name in ['main.py', 'engine.py', 'single_instance.py', 'requirements.txt', 'build.ps1', 'make_icon.py',
+for name in ['main.py', 'engine.py', 'single_instance.py', 'image_watermarks.py', 'watermark_canvas.py', 'version.py', 'pdf_watermark_dialog.py',
+             'requirements.txt', 'build.ps1', 'make_icon.py',
              'package_release.py', 'make_demo_assets.py', '水印工坊.spec', '.gitignore', '.gitattributes',
              'app.ico', 'app.png', 'LICENSE', 'README.md', '使用说明.md', 'THIRD_PARTY_NOTICES.md']:
     shutil.copy2(root / name, source_folder / name)
@@ -56,6 +58,7 @@ obsolete_local_check = source_folder / 'tests/check_real_pdf.py'
 if obsolete_local_check.exists():
     obsolete_local_check.unlink()
 shutil.copy2(root / 'tests/test_single_instance.py', source_folder / 'tests/test_single_instance.py')
+shutil.copy2(root / 'tests/test_image_watermarks.py', source_folder / 'tests/test_image_watermarks.py')
 for filename, destination in [
     ('desktop.png', '界面预览.png'),
     ('export-settings.png', '分辨率与压缩滑块.png'),
@@ -63,6 +66,8 @@ for filename, destination in [
     ('context-menu.png', '中文右键菜单预览.png'),
     ('controls.png', '按钮样式预览.png'),
     ('color-swatches.png', '颜色图标预览.png'),
+    ('image-watermarks.png', '图片水印预览.png'),
+    ('pdf-page-picker.png', 'PDF水印选页预览.png'),
 ]:
     shutil.copy2(root / 'docs/images' / filename, release / destination)
 shutil.copy2(root / 'dist/水印工坊.exe', release / '水印工坊.exe')
@@ -75,3 +80,6 @@ with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslev
 print(f'Release: {release}')
 print(f'Executable: {(release / "水印工坊.exe").stat().st_size:,} bytes')
 print(f'Archive: {archive} ({archive.stat().st_size:,} bytes)')
+versioned_archive = root.parent / f'watermark-studio-v{APP_VERSION}-windows-x64.zip'
+shutil.copy2(archive, versioned_archive)
+print(f'Versioned archive: {versioned_archive}')

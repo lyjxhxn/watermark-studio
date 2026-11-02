@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+from dataclasses import asdict, replace
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSettings, QUrl, QSize, QTranslator, QLibraryInfo, QRectF
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPixmap, QPalette, QPainter, QPen
@@ -12,11 +13,15 @@ from PySide6.QtWidgets import (
     QPushButton, QFileDialog, QListWidget, QListWidgetItem, QSplitter,
     QScrollArea, QFormLayout, QPlainTextEdit, QComboBox, QDoubleSpinBox,
     QSpinBox, QSlider, QLineEdit, QColorDialog, QProgressBar, QMessageBox,
-    QFrame, QSizePolicy, QAbstractItemView,
+    QFrame, QSizePolicy, QAbstractItemView, QTabWidget, QCheckBox,
 )
 
-from engine import Options, SUPPORTED, Cancelled, export_file, page_count, preview, selected_pages, compression_quality
+from engine import Options, SUPPORTED, Cancelled, export_file, page_count, preview, selected_pages, validate_options, options_from_dict
 from single_instance import SingleInstance
+from version import APP_VERSION
+from image_watermarks import AssetCache, read_image, image_geometry
+from watermark_canvas import WatermarkCanvas
+from pdf_watermark_dialog import PdfWatermarkDialog
 
 APP_NAME = '水印工坊'
 
@@ -30,6 +35,10 @@ QLabel#title { font-size: 25px; font-weight: 700; color: #18223b; }
 QLabel#subtitle, QLabel#hint { color: #7a8499; font-size: 12px; }
 QLabel#section { font-weight: 700; font-size: 15px; }
 QLabel#badge { background: #ecebff; color: #6256cc; border-radius: 10px; padding: 5px 10px; }
+QTabWidget::pane { border: 0; }
+QTabBar::tab { background: #f4f5fa; color: #7a8499; padding: 8px 24px; border-radius: 6px; margin-right: 5px; }
+QTabBar::tab:selected { background: #ece9ff; color: #6256cc; }
+QCheckBox { spacing: 7px; }
 QPushButton { background: white; border: 1px solid #dce1eb; border-radius: 7px; padding: 8px 12px; }
 QPushButton:hover { background: #f0effc; border-color: #b5afe2; }
 QPushButton:pressed { background: #e5e2fa; }
@@ -164,9 +173,10 @@ class ExportWorker(QThread):
     result = Signal(str, str)
     completed = Signal(object, object, bool)
 
-    def __init__(self, sources, folder, options):
+    def __init__(self, sources, folder, options, image_assets=None):
         super().__init__()
         self.sources, self.folder, self.options = sources, folder, options
+        self.image_assets = image_assets
         self.cancel_event = threading.Event()
 
     def run(self):
@@ -180,7 +190,7 @@ class ExportWorker(QThread):
                 def update(done, total):
                     percentage = round((index + done / total) * 100 / len(self.sources))
                     self.progress.emit(percentage, f'{Path(source).name}  ·  {done}/{total} 页')
-                destination = export_file(source, self.folder, self.options, update, self.cancel_event.is_set)
+                destination = export_file(source, self.folder, self.options, update, self.cancel_event.is_set, self.image_assets)
                 outputs.append(str(destination))
                 self.result.emit(source, '已完成')
             except Cancelled:
@@ -194,7 +204,7 @@ class ExportWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings=None, interactive=True):
+    def __init__(self, settings=None, interactive=True, cache_dir=None):
         super().__init__()
         self.settings = settings or QSettings('WatermarkStudio', 'WatermarkStudio')
         self.interactive = interactive
@@ -204,7 +214,15 @@ class MainWindow(QMainWindow):
         self.last_outputs = []
         self.last_errors = []
         self.pending_summary = None
-        self.setWindowTitle(APP_NAME + ' · PDF 与图片水印')
+        self.image_marks = []
+        self.image_assets = {}
+        self.image_errors = {}
+        self.asset_cache = AssetCache(cache_dir)
+        self.save_timer = QTimer(self)
+        self.save_timer.setSingleShot(True)
+        self.save_timer.setInterval(400)
+        self.save_timer.timeout.connect(self.save_settings)
+        self.setWindowTitle(f'{APP_NAME} v{APP_VERSION} · PDF 与图片水印')
         self.resize(1390, 900)
         self.setMinimumSize(1080, 760)
         self.setAcceptDrops(True)
@@ -219,6 +237,7 @@ class MainWindow(QMainWindow):
         self.load_settings()
         self.connect_controls()
         self.update_mode()
+        self.sync_image_controls()
 
     def build_ui(self):
         root = QWidget()
@@ -230,7 +249,12 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         titles = QVBoxLayout()
         titles.setSpacing(4)
-        titles.addWidget(label(APP_NAME, 'title'))
+        name_line = QHBoxLayout()
+        name_line.addWidget(label(APP_NAME, 'title'))
+        self.version_label = label('v' + APP_VERSION, 'badge')
+        name_line.addWidget(self.version_label)
+        name_line.addStretch()
+        titles.addLayout(name_line)
         titles.addWidget(label('让每一份文件，都有你的印记。', 'subtitle'))
         header.addLayout(titles)
         header.addStretch()
@@ -290,16 +314,15 @@ class MainWindow(QMainWindow):
         self.preview_canvas.setObjectName('previewCanvas')
         canvas_layout = QVBoxLayout(self.preview_canvas)
         canvas_layout.setContentsMargins(16, 16, 16, 16)
-        self.preview_label = QLabel('拖入 PDF 或图片\n即可预览水印效果')
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setWordWrap(True)
-        self.preview_label.setMinimumSize(10, 10)
-        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.preview_label.setStyleSheet('color: #8b95aa; font-size: 17px;')
-        canvas_layout.addWidget(self.preview_label)
+        self.canvas = WatermarkCanvas()
+        self.preview_label = self.canvas
+        self.canvas.geometry_changed.connect(self.image_geometry_changed)
+        self.canvas.image_selected.connect(self.canvas_image_selected)
+        canvas_layout.addWidget(self.canvas)
         preview_layout.addWidget(self.preview_canvas, 1)
         self.preview_info = label('预览会按窗口缩放，导出使用右侧设置的分辨率。', 'hint')
         self.preview_info.setWordWrap(True)
+        self.preview_info.setMinimumHeight(36)
         preview_layout.addWidget(self.preview_info)
         splitter.addWidget(self.preview_panel)
 
@@ -311,9 +334,17 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         body = QWidget()
         body.setStyleSheet('background: white;')
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(0, 8, 6, 8)
+        settings_layout = QVBoxLayout(body)
+        settings_layout.setContentsMargins(0, 8, 6, 8)
+        self.watermark_tabs = QTabWidget()
+        settings_layout.addWidget(self.watermark_tabs)
+        text_page = QWidget()
+        layout = QVBoxLayout(text_page)
+        layout.setContentsMargins(0, 10, 0, 8)
         layout.setSpacing(10)
+        self.text_enabled = QCheckBox('启用文字水印')
+        self.text_enabled.setChecked(True)
+        layout.addWidget(self.text_enabled)
         layout.addWidget(label('水印文字'))
         self.text_edit = QPlainTextEdit('水印')
         self.text_edit.setMaximumHeight(74)
@@ -383,6 +414,9 @@ class MainWindow(QMainWindow):
         grid_form.addRow('每行数量', self.columns_spin)
         grid_form.addRow('行数', self.rows_spin)
         layout.addLayout(grid_form)
+        self.watermark_tabs.addTab(text_page, '文字')
+        self.watermark_tabs.addTab(self.build_image_panel(), '图片 / PDF')
+        layout = settings_layout
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setStyleSheet('color: #e7eaf1;')
@@ -475,7 +509,241 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
 
+    def build_image_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 10, 0, 8)
+        layout.setSpacing(10)
+        self.add_image_button = QPushButton('＋  添加图片 / PDF 水印')
+        self.add_image_button.clicked.connect(self.choose_watermark_images)
+        layout.addWidget(self.add_image_button)
+        self.image_list = QListWidget()
+        self.image_list.setIconSize(QSize(32, 32))
+        self.image_list.setMinimumHeight(142)
+        self.image_list.setMaximumHeight(180)
+        self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.image_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.image_list.currentItemChanged.connect(lambda: self.image_selection_changed())
+        self.image_list.itemChanged.connect(self.image_enabled_changed)
+        layout.addWidget(self.image_list)
+        buttons = QHBoxLayout()
+        self.image_up_button = QPushButton('上移一层')
+        self.image_down_button = QPushButton('下移一层')
+        self.image_remove_button = QPushButton('移除')
+        self.image_up_button.clicked.connect(lambda: self.move_image(-1))
+        self.image_down_button.clicked.connect(lambda: self.move_image(1))
+        self.image_remove_button.clicked.connect(self.remove_image)
+        for button in [self.image_up_button, self.image_down_button, self.image_remove_button]:
+            button.setStyleSheet('padding: 7px 6px;')
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        form = QFormLayout()
+        self.image_width_spin = QDoubleSpinBox()
+        self.image_width_spin.setRange(1, 100)
+        self.image_width_spin.setDecimals(1)
+        self.image_width_spin.setSuffix(' %')
+        self.image_width_spin.setToolTip('占页面宽度的比例，保持图片原始宽高比。')
+        self.image_width_spin.valueChanged.connect(lambda value: self.change_image_value('width_ratio', value/100))
+        form.addRow('图片大小', self.image_width_spin)
+        self.image_opacity_spin = QSpinBox()
+        self.image_opacity_spin.setRange(1, 100)
+        self.image_opacity_spin.setSuffix(' %')
+        self.image_opacity_spin.setToolTip('与图片原有的透明通道叠加；100% 保留原图透明效果。')
+        self.image_opacity_spin.valueChanged.connect(lambda value: self.change_image_value('opacity', value))
+        form.addRow('不透明度', self.image_opacity_spin)
+        layout.addLayout(form)
+        self.image_center_button = QPushButton('将所选图片居中')
+        self.image_center_button.clicked.connect(self.center_image)
+        layout.addWidget(self.image_center_button)
+        self.image_hint = label('添加透明 PNG 等图片，在预览中拖动位置、拉动四角缩放。列表顶部显示在最前方。', 'hint')
+        self.image_hint.setWordWrap(True)
+        layout.addWidget(self.image_hint)
+        layout.addStretch()
+        return panel
+
+    def selected_image_uid(self):
+        item = self.image_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else ''
+
+    def selected_image(self):
+        uid = self.selected_image_uid()
+        return next((mark for mark in self.image_marks if mark.uid == uid), None)
+
+    def reload_images(self, selected_uid=None):
+        selected_uid = self.selected_image_uid() if selected_uid is None else selected_uid
+        self.image_assets, self.image_errors = {}, {}
+        self.image_list.blockSignals(True)
+        self.image_list.clear()
+        for index, mark in enumerate(self.image_marks):
+            item = QListWidgetItem(mark.name)
+            item.setData(Qt.ItemDataRole.UserRole, mark.uid)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if mark.enabled else Qt.CheckState.Unchecked)
+            try:
+                image = read_image(mark)
+                self.image_assets[mark.uid] = image
+                item.setIcon(QIcon(QPixmap.fromImage(image)))
+                item.setToolTip(mark.name)
+            except ValueError as exc:
+                self.image_errors[mark.uid] = str(exc)
+                item.setText('缺失 / 损坏 · ' + mark.name)
+                item.setForeground(QColor('#c85b61'))
+                item.setToolTip(str(exc))
+            self.image_list.addItem(item)
+            if mark.uid == selected_uid:
+                self.image_list.setCurrentRow(index)
+        self.image_list.blockSignals(False)
+        self.image_selection_changed()
+        self.update_export_availability()
+
+    def choose_watermark_images(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, '添加图片 / PDF 水印', '',
+            '图片与 PDF (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff *.pdf)')
+        self.add_watermark_images(paths)
+
+    def add_watermark_images(self, paths):
+        if self.worker:
+            return
+        errors, selected = [], self.selected_image_uid()
+        for path in paths:
+            try:
+                if Path(path).suffix.lower() == '.pdf':
+                    count = page_count(path)
+                    page_index = 0
+                    if count > 1:
+                        dialog = PdfWatermarkDialog(path,self)
+                        if dialog.exec() != PdfWatermarkDialog.DialogCode.Accepted:
+                            continue
+                        page_index = dialog.selected_page_index
+                    mark = self.asset_cache.import_pdf(path,page_index)
+                else:
+                    mark = self.asset_cache.import_image(path)
+                offset = 0.03 * (len(self.image_marks) % 6)
+                mark = replace(mark, center_x=0.5+offset, center_y=0.5+offset)
+                self.image_marks.insert(0, mark)
+                selected = mark.uid
+            except Exception as exc:
+                errors.append(f'{Path(path).name}：{exc}')
+        self.reload_images(selected)
+        self.watermark_tabs.setCurrentIndex(1)
+        self.images_changed()
+        self.save_settings()
+        if errors:
+            self.show_message('部分图片未添加', '\n'.join(errors), warning=True)
+
+    def image_selection_changed(self):
+        self.canvas.select_image(self.selected_image_uid())
+        self.sync_image_controls()
+
+    def canvas_image_selected(self, uid):
+        self.image_list.blockSignals(True)
+        row = next((index for index, mark in enumerate(self.image_marks) if mark.uid == uid), -1)
+        self.image_list.setCurrentRow(row)
+        self.image_list.blockSignals(False)
+        self.sync_image_controls()
+        if uid:
+            self.watermark_tabs.setCurrentIndex(1)
+
+    def sync_image_controls(self):
+        mark = self.selected_image()
+        valid = mark is not None and mark.uid in self.image_assets
+        for widget in [self.image_width_spin, self.image_opacity_spin, self.image_center_button]:
+            widget.setEnabled(valid)
+        row = self.image_list.currentRow()
+        self.image_remove_button.setEnabled(mark is not None)
+        self.image_up_button.setEnabled(row > 0)
+        self.image_down_button.setEnabled(0 <= row < len(self.image_marks)-1)
+        if mark:
+            self.image_width_spin.blockSignals(True)
+            self.image_opacity_spin.blockSignals(True)
+            width = mark.width_ratio
+            if valid and self.canvas.background_item is not None:
+                page = self.canvas.sceneRect()
+                width = image_geometry(mark, page.width(), page.height(), self.image_assets[mark.uid]).width()/page.width()
+            self.image_width_spin.setValue(width * 100)
+            self.image_opacity_spin.setValue(mark.opacity)
+            self.image_width_spin.blockSignals(False)
+            self.image_opacity_spin.blockSignals(False)
+        if mark and mark.uid in self.image_errors:
+            self.image_hint.setText(self.image_errors[mark.uid])
+        else:
+            self.image_hint.setText('在预览中拖动位置、拉动四角等比缩放。布局统一应用到选定页和批量文件，图片会自动保存到本机。')
+
+    def images_changed(self):
+        self.canvas.update_layers(self.image_marks, self.image_assets, self.selected_image_uid())
+        self.sync_image_controls()
+        self.update_export_availability()
+        self.save_timer.start()
+
+    def image_enabled_changed(self, item):
+        if self.worker:
+            return
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        self.image_marks = [replace(mark, enabled=item.checkState() == Qt.CheckState.Checked) if mark.uid == uid else mark for mark in self.image_marks]
+        self.images_changed()
+
+    def change_image_value(self, field, value):
+        if self.worker:
+            return
+        uid = self.selected_image_uid()
+        self.image_marks = [replace(mark, **{field: value}) if mark.uid == uid else mark for mark in self.image_marks]
+        self.images_changed()
+
+    def image_geometry_changed(self, uid, x, y, width):
+        if self.worker:
+            return
+        self.image_marks = [replace(mark, center_x=x, center_y=y, width_ratio=width) if mark.uid == uid else mark for mark in self.image_marks]
+        self.sync_image_controls()
+        self.save_timer.start()
+
+    def remove_image(self):
+        if self.worker:
+            return
+        row = self.image_list.currentRow()
+        if row >= 0:
+            self.image_marks.pop(row)
+            selected = self.image_marks[min(row, len(self.image_marks)-1)].uid if self.image_marks else ''
+            self.reload_images(selected)
+            self.images_changed()
+            self.save_settings()
+
+    def move_image(self, direction):
+        if self.worker:
+            return
+        row = self.image_list.currentRow()
+        target = row + direction
+        if 0 <= row < len(self.image_marks) and 0 <= target < len(self.image_marks):
+            uid = self.image_marks[row].uid
+            self.image_marks[row], self.image_marks[target] = self.image_marks[target], self.image_marks[row]
+            self.reload_images(uid)
+            self.images_changed()
+
+    def center_image(self):
+        if self.worker:
+            return
+        uid = self.selected_image_uid()
+        self.image_marks = [replace(mark, center_x=0.5, center_y=0.5) if mark.uid == uid else mark for mark in self.image_marks]
+        self.images_changed()
+
+    def update_export_availability(self, *args):
+        valid = ((self.text_enabled.isChecked() and bool(self.text_edit.toPlainText().strip())) or
+                 any(mark.enabled for mark in self.image_marks))
+        valid = valid and all(not mark.enabled or mark.uid in self.image_assets for mark in self.image_marks)
+        self.export_button.setEnabled(bool(valid) and not getattr(self, '_busy', False))
+
+    def save_settings(self):
+        self.settings.setValue('options', json.dumps(asdict(self.get_options()), ensure_ascii=False))
+        self.settings.setValue('folder', self.folder_edit.text())
+        self.settings.sync()
+        if self.settings.status() == QSettings.Status.NoError:
+            self.asset_cache.cleanup(self.image_marks)
+        else:
+            self.status.setText('设置保存失败，请检查用户数据目录的写入权限。')
+
     def connect_controls(self):
+        self.text_enabled.toggled.connect(self.schedule_preview)
+        self.text_enabled.toggled.connect(self.update_export_availability)
+        self.text_edit.textChanged.connect(self.update_export_availability)
         self.text_edit.textChanged.connect(self.schedule_preview)
         self.font_combo.currentTextChanged.connect(self.schedule_preview)
         for spin in [self.size_spin, self.angle_spin, self.columns_spin, self.rows_spin, self.dpi_spin]:
@@ -492,9 +760,11 @@ class MainWindow(QMainWindow):
                        angle=self.angle_spin.value(), color=self.color,
                        tiled=self.mode_combo.currentIndex() == 0,
                        columns=self.columns_spin.value(), rows=self.rows_spin.value(),
-                       dpi=self.dpi_spin.value(), compression=self.compression_slider.value(), pages=self.range_edit.text())
+                       dpi=self.dpi_spin.value(), compression=self.compression_slider.value(), pages=self.range_edit.text(),
+                       text_enabled=self.text_enabled.isChecked(), image_watermarks=tuple(self.image_marks))
 
     def apply_options(self, options):
+        self.text_enabled.setChecked(options.text_enabled)
         self.text_edit.setPlainText(options.text)
         index = self.font_combo.findText(options.family, Qt.MatchFlag.MatchExactly)
         if index >= 0:
@@ -512,6 +782,8 @@ class MainWindow(QMainWindow):
         self.compression_slider.setValue(options.compression)
         self.update_compression_label()
         self.range_edit.setText(options.pages)
+        self.image_marks = list(options.image_watermarks)
+        self.reload_images()
 
     def update_compression_label(self, *args):
         value = self.compression_slider.value()
@@ -520,7 +792,7 @@ class MainWindow(QMainWindow):
 
     def load_settings(self):
         try:
-            options = Options(**json.loads(self.settings.value('options', '{}')))
+            options = options_from_dict(json.loads(self.settings.value('options', '{}')))
             self.apply_options(options)
             self.folder_edit.setText(self.settings.value('folder', ''))
         except (ValueError, TypeError):
@@ -528,6 +800,7 @@ class MainWindow(QMainWindow):
 
     def reset_options(self):
         self.apply_options(Options())
+        self.save_settings()
         self.schedule_preview()
 
     def update_mode(self):
@@ -651,28 +924,27 @@ class MainWindow(QMainWindow):
         item = self.file_list.currentItem()
         if not item:
             self.preview_image = None
-            self.preview_label.clear()
-            self.preview_label.setText('拖入 PDF 或图片\n即可预览水印效果')
+            self.canvas.show_message('拖入 PDF 或图片\n即可预览水印效果')
             self.preview_info.setText('预览会按窗口缩放，导出使用右侧设置的分辨率。')
             return
         try:
             source = item.data(Qt.ItemDataRole.UserRole)['path']
-            self.preview_image = preview(source, self.page_spin.value() - 1, self.get_options())
-            self.fit_preview()
-            self.preview_info.setText(f'{Path(source).name}  ·  第 {self.page_spin.value()} 页\n预览已缩放；分辨率与压缩效果以导出为准。')
+            options = self.get_options()
+            self.preview_image = preview(source, self.page_spin.value() - 1, options, include_images=False)
+            allowed = Path(source).suffix.lower() != '.pdf' or self.page_spin.value()-1 in selected_pages(options.pages, item.data(Qt.ItemDataRole.UserRole)['count'])
+            self.canvas.set_page(self.preview_image, self.image_marks, self.image_assets, allowed, self.selected_image_uid())
+            note = '拖动图片移动，拉动四角等比缩放。' if allowed else '此页不在水印页码范围内，无法编辑水印。'
+            if self.image_errors:
+                note = '部分水印副本缺失或损坏，请在“图片 / PDF”页移除后重新添加。'
+            self.preview_info.setText(f'{Path(source).name}  ·  第 {self.page_spin.value()} 页\n{note}')
+            self.sync_image_controls()
         except Exception as exc:
             self.preview_image = None
-            self.preview_label.clear()
-            self.preview_label.setText('无法显示预览\n' + str(exc))
+            self.canvas.show_message('无法显示预览\n' + str(exc))
             self.preview_info.setText('请检查文件或页码设置。')
 
     def fit_preview(self):
-        if self.preview_image is not None:
-            pixmap = QPixmap.fromImage(self.preview_image)
-            size = self.preview_label.size()
-            if size.width() > 0 and size.height() > 0:
-                self.preview_label.setPixmap(pixmap.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
-                                                           Qt.TransformationMode.SmoothTransformation))
+        self.canvas.fit_page()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -691,10 +963,13 @@ class MainWindow(QMainWindow):
             self.show_message('输出目录', '请先选择或导出到一个有效的文件夹。')
 
     def set_busy(self, busy):
+        self._busy = busy
+        self.canvas.set_editable(not busy)
         for widget in [self.file_panel, self.options_panel, self.folder_edit, self.browse_button, self.export_button]:
             widget.setEnabled(not busy)
         self.cancel_button.setVisible(busy)
         self.cancel_button.setEnabled(busy)
+        self.update_export_availability()
 
     def start_export(self):
         if self.worker:
@@ -704,8 +979,10 @@ class MainWindow(QMainWindow):
             self.show_message('请先添加文件', '添加 PDF 或图片后即可开始导出。')
             return
         options = self.get_options()
-        if not options.text.strip():
-            self.show_message('请填写水印文字', '水印文字不能为空。')
+        try:
+            image_assets = validate_options(options)
+        except (ValueError, OSError) as exc:
+            self.show_message('请检查水印', str(exc), warning=True)
             return
         if not self.folder_edit.text().strip():
             self.show_message('请选择保存位置', '设置一个输出文件夹后即可开始导出。')
@@ -721,7 +998,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.set_busy(True)
         self.status.setText('正在准备导出…')
-        self.worker = ExportWorker(sources, self.folder_edit.text().strip(), options)
+        self.worker = ExportWorker(sources, self.folder_edit.text().strip(), options, image_assets)
         self.worker.progress.connect(self.on_progress)
         self.worker.result.connect(self.on_result)
         self.worker.completed.connect(self.on_completed)
@@ -805,10 +1082,10 @@ class MainWindow(QMainWindow):
             self.show_message('正在结束导出', '已请求取消，请等待当前页面处理结束后再关闭窗口。')
             event.ignore()
             return
-        from dataclasses import asdict
-        self.settings.setValue('options', json.dumps(asdict(self.get_options()), ensure_ascii=False))
-        self.settings.setValue('folder', self.folder_edit.text())
-        self.settings.sync()
+        self.save_timer.stop()
+        self.preview_timer.stop()
+        self.save_settings()
+        self.canvas.show_message('')
         super().closeEvent(event)
 
 
@@ -816,6 +1093,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName('WatermarkStudio')
+    app.setApplicationVersion(APP_VERSION)
     configure_appearance(app)
     configure_language(app)
     incoming = [arg for arg in sys.argv[1:] if Path(arg).is_file()]
@@ -827,7 +1105,15 @@ def main():
         QMessageBox.critical(None, '无法启动水印工坊', str(exc))
         return 1
     smoke = '--smoke-test' in sys.argv
-    window = MainWindow(interactive=not smoke)
+    smoke_context = None
+    if smoke:
+        import tempfile
+        smoke_context = tempfile.TemporaryDirectory(prefix='watermark-exe-qa-')
+        smoke_folder = Path(smoke_context.name)
+        window = MainWindow(settings=QSettings(str(smoke_folder/'settings.ini'), QSettings.Format.IniFormat),
+                            interactive=False, cache_dir=smoke_folder/'cache')
+    else:
+        window = MainWindow()
     instance.activation_requested.connect(window.activate_existing)
     window.show()
     if smoke:
@@ -837,23 +1123,55 @@ def main():
         from engine import export_file
         def check_bundle():
             try:
-                folder = Path(tempfile.mkdtemp(prefix='watermark-bundle-test-'))
+                folder = smoke_folder/'samples'
+                folder.mkdir()
                 source = folder / 'sample.png'
                 Image.new('RGB', (640, 480), 'white').save(source)
                 window.add_files([str(source)])
+                logo_source = folder/'transparent-logo.png'
+                logo = Image.new('RGBA', (120, 80))
+                from PIL import ImageDraw
+                ImageDraw.Draw(logo).rounded_rectangle((10,10,110,70),radius=12,fill=(108,92,231,180))
+                logo.save(logo_source)
+                window.add_watermark_images([str(logo_source),str(logo_source)])
+                window.text_enabled.setChecked(False)
+                window.image_geometry_changed(window.image_marks[0].uid,.7,.3,.3)
                 window.refresh_preview()
+                assert len(window.canvas.overlays) == 2
+                assert APP_VERSION in window.windowTitle()
+                assert app.applicationVersion() == APP_VERSION
                 output = export_file(source, folder / 'output', window.get_options())
                 assert output.exists() and window.preview_image is not None
                 import pymupdf as fitz
                 pdf_source = folder / 'sample.pdf'
                 with fitz.open() as doc:
-                    page = doc.new_page(width=300, height=200)
-                    page.insert_text((20, 30), 'Bundle rendering test')
+                    for page_index in range(2):
+                        page = doc.new_page(width=300, height=200)
+                        page.insert_text((20, 30), f'Bundle rendering test {page_index+1}')
+                        page.draw_rect(fitz.Rect(80,60,220,150),color=None,fill=(.4,.3,.8),fill_opacity=.6)
                     doc.save(pdf_source)
+                picker_errors = []
+                def choose_pdf_page():
+                    picker = app.activeModalWidget()
+                    try:
+                        assert isinstance(picker,PdfWatermarkDialog)
+                        picker.page_spin.setValue(2)
+                        picker.grab().save(str(Path(sys.executable).parent/'smoke-pdf-page-picker.png'))
+                    except Exception as exc:
+                        picker_errors.append(str(exc))
+                    finally:
+                        if isinstance(picker,PdfWatermarkDialog):
+                            picker.accept() if not picker_errors else picker.reject()
+                QTimer.singleShot(150,choose_pdf_page)
+                window.add_watermark_images([str(pdf_source)])
+                assert not picker_errors and '第 2 页' in window.image_marks[0].name
+                window.refresh_preview()
                 pdf_output = export_file(pdf_source, folder / 'output', window.get_options())
                 with fitz.open(pdf_output) as doc:
-                    assert len(doc) == 1 and len(doc[0].get_images()) == 1
-                    assert doc[0].get_images()[0][1] == 0 and not doc[0].get_text().strip()
+                    assert len(doc) == 2
+                    for page in doc:
+                        assert len(page.get_images()) == 1
+                        assert page.get_images()[0][1] == 0 and not page.get_text().strip()
                 window.grab().save(str(Path(sys.executable).parent / 'smoke-preview.png'))
                 dialog = QColorDialog(QColor(window.color), window)
                 dialog.setWindowTitle('选择水印文字颜色')
@@ -885,6 +1203,11 @@ def main():
         return app.exec()
     finally:
         instance.close()
+        window.canvas.show_message('')
+        if smoke_context:
+            window.save_timer.stop()
+            window.preview_timer.stop()
+            smoke_context.cleanup()
 
 
 if __name__ == '__main__':

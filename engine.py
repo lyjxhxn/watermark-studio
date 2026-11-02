@@ -11,6 +11,7 @@ import pymupdf as fitz
 from PIL import Image, ImageOps
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath
+from image_watermarks import ImageWatermark, image_geometry, load_images
 
 SUPPORTED = {'.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tif', '.tiff'}
 
@@ -29,6 +30,22 @@ class Options:
     dpi: int = 100
     compression: int = 20
     pages: str = ''
+    text_enabled: bool = True
+    image_watermarks: tuple[ImageWatermark, ...] = ()
+
+
+def options_from_dict(values):
+    values = dict(values)
+    values['image_watermarks'] = tuple(ImageWatermark(**item) for item in values.get('image_watermarks', []))
+    if len({item.uid for item in values['image_watermarks']}) != len(values['image_watermarks']):
+        raise ValueError('图片水印标识重复。')
+    return Options(**values)
+
+
+def validate_options(options):
+    if not (options.text_enabled and options.text.strip()) and not any(mark.enabled for mark in options.image_watermarks):
+        raise ValueError('请启用有效文字水印，或添加并启用至少一张图片水印。')
+    return load_images(options.image_watermarks)
 
 
 class Cancelled(Exception):
@@ -91,12 +108,13 @@ def pil_image(image):
                   QImage.Format.Format_RGBA8888).copy()
 
 
-def watermark(image, options, dpi):
+def watermark(image, options, dpi, image_assets=None):
     result = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     painter = QPainter(result)
     try:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         font = QFont(options.family)
         font.setPixelSize(max(1, round(options.size * dpi / 72)))
         path = QPainterPath()
@@ -109,7 +127,7 @@ def watermark(image, options, dpi):
         painter.setBrush(color)
         columns = options.columns if options.tiled else 1
         rows = options.rows if options.tiled else 1
-        for row in range(rows):
+        for row in range(rows if options.text_enabled and options.text.strip() else 0):
             for column in range(columns):
                 painter.save()
                 painter.translate((column + 0.5) * result.width() / columns,
@@ -118,12 +136,20 @@ def watermark(image, options, dpi):
                 painter.translate(-bounds.center())
                 painter.drawPath(path)
                 painter.restore()
+        assets = load_images(options.image_watermarks) if image_assets is None else image_assets
+        # The first list entry is in front, matching the image layer list.
+        for mark in reversed(options.image_watermarks):
+            if not mark.enabled:
+                continue
+            picture = assets[mark.uid]
+            painter.setOpacity(mark.opacity / 100)
+            painter.drawImage(image_geometry(mark, result.width(), result.height(), picture), picture)
     finally:
         painter.end()
     return result
 
 
-def preview(source, page_index, options):
+def preview(source, page_index, options, include_images=True):
     source = Path(source)
     if source.suffix.lower() == '.pdf':
         with fitz.open(source) as doc:
@@ -142,6 +168,9 @@ def preview(source, page_index, options):
                              Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         dpi = options.dpi * scale
     if source.suffix.lower() != '.pdf' or page_index in selected_pages(options.pages, page_count(source)):
+        if not include_images:
+            from dataclasses import replace
+            options = replace(options, image_watermarks=())
         image = watermark(image, options, dpi)
     return image
 
@@ -168,10 +197,10 @@ def unique_destination(folder, source):
     return candidate
 
 
-def export_file(source, folder, options, progress=lambda done,total: None, cancelled=lambda: False):
+def export_file(source, folder, options, progress=lambda done,total: None, cancelled=lambda: False, image_assets=None):
     source, folder = Path(source), Path(folder)
-    if not options.text.strip():
-        raise ValueError('请填写水印文字。')
+    if image_assets is None:
+        image_assets = validate_options(options)
     page_count(source)
     folder.mkdir(parents=True, exist_ok=True)
     destination = unique_destination(folder, source)
@@ -188,7 +217,7 @@ def export_file(source, folder, options, progress=lambda done,total: None, cance
                         raise Cancelled()
                     image = pdf_image(page, options.dpi)
                     if index in chosen:
-                        image = watermark(image, options, options.dpi)
+                        image = watermark(image, options, options.dpi, image_assets)
                     new_page = output.new_page(width=page.rect.width, height=page.rect.height)
                     # Discard the opaque alpha channel so PDF contains no mask/layer.
                     image = image.convertToFormat(QImage.Format.Format_RGB888)
@@ -206,7 +235,7 @@ def export_file(source, folder, options, progress=lambda done,total: None, cance
                     if cancelled():
                         raise Cancelled()
                     original.seek(index)
-                    image = watermark(pil_image(original), options, options.dpi)
+                    image = watermark(pil_image(original), options, options.dpi, image_assets)
                     with Image.open(BytesIO(png_bytes(image))) as encoded:
                         frame = encoded.copy()
                     if source.suffix.lower() in {'.jpg', '.jpeg', '.bmp'}:
