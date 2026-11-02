@@ -1,10 +1,10 @@
-# 水印工坊 v1.1.0 · Watermark Studio
+# 水印工坊 v1.2.0 · Watermark Studio
 
-Windows 桌面水印工具，支持 PDF 和常见图片格式。文字、透明图片和所选 PDF 页面可以同时叠加，在预览中拖动位置、拉动四角等比缩放，实时预览、批量导出。
+Windows 桌面水印工具，支持 PDF 和常见图片格式。文字、透明图片和所选 PDF 页面可以同时叠加，在预览中拖动位置、拉动四角等比缩放、拖动圆形手柄旋转，实时预览、批量导出。
 
 水印直接与页面内容合成为图片像素，PDF 每页包含一张不透明图片，没有独立的水印文字、注释或水印图层。全部文件在本机处理。
 
-**[下载 Windows EXE](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.1.0/watermark-studio-v1.1.0-windows-x64.exe)** · **[下载完整便携包](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.1.0/watermark-studio-v1.1.0-windows-x64.zip)** · [所有版本](https://github.com/lyjxhxn/watermark-studio/releases)
+**[下载 Windows EXE](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.2.0/watermark-studio-v1.2.0-windows-x64.exe)** · **[下载完整便携包](https://github.com/lyjxhxn/watermark-studio/releases/download/v1.2.0/watermark-studio-v1.2.0-windows-x64.zip)** · [所有版本](https://github.com/lyjxhxn/watermark-studio/releases)
 
 ![水印工坊桌面界面，使用软件生成的演示内容](docs/images/desktop.png)
 
@@ -15,6 +15,7 @@ Windows 桌面水印工具，支持 PDF 和常见图片格式。文字、透明�
 - 文字、图片分别开关；支持多张透明 PNG 等静态图片，独立透明度、位置、大小和叠放顺序。
 - PDF 也能作为水印来源：单页直接添加，多页先预览并选择其中一页，可重复添加不同页面。
 - 图片可在画布中拖动及四角等比例缩放，布局按相对位置和比例应用到选定页及批量文件。
+- 图片/PDF 水印支持独立旋转：圆形旋转手柄、角度输入、归零按钮，按住 Shift 每 15° 吸附；旋转后仍可移动和缩放。
 - 图片自动复制到本机软件数据目录并保存布局，原图移动或删除后仍可继续使用。
 - 调整文字大小、颜色、不透明度、角度；支持居中或重复平铺，分别设置行数与列数。
 - PDF 页码选择；未加水印的页仍保留，整份 PDF 均按所选 DPI 合成为图片。
@@ -40,7 +41,11 @@ Windows 桌面水印工具，支持 PDF 和常见图片格式。文字、透明�
 
 ![PDF 水印来源选页窗口](docs/images/pdf-page-picker.png)
 
-点击列表或画布中的水印后，可拖动移动、拉动四角等比缩放，也可输入占页面宽度的百分比。列表顶部位于最前方，“上移一层 / 下移一层”调整顺序，勾选框控制是否参与导出。
+点击列表或画布中的水印后，可拖动移动、拉动四角等比缩放，也可输入占页面宽度的百分比。选框外的紫色圆形箭头手柄用于旋转；右侧“旋转角度”可精确输入 -180° 到 180°，点击“归零”恢复原方向，按住 Shift 拖动可每 15° 吸附。每张水印独立保存角度，与文字水印的角度分别设置。
+
+![图片与 PDF 水印旋转](docs/images/rotation-watermarks.png)
+
+列表顶部位于最前方，“上移一层 / 下移一层”调整顺序，勾选框控制是否参与导出。旋转以水印中心为轴，必要时约束位置或缩小以保证整张水印位于页面内；旋转后的四角缩放仍保持原图比例。
 
 图片保留自身透明通道，再叠加独立不透明度。文字先绘制，图片随后叠加；图片布局统一应用到批量文件。未包含在 PDF 水印页码中的页面不显示图片水印或编辑手柄。导出文件中不会包含选框、缩放手柄或独立水印对象。
 

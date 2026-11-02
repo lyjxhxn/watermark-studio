@@ -1,5 +1,5 @@
 """Single source of product version; application identity stays unchanged."""
-APP_VERSION = '1.1.0'
+APP_VERSION = '1.2.0'
 VERSION_TUPLE = tuple(int(part) for part in APP_VERSION.split('.')) + (0,)
 
 

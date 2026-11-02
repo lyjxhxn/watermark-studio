@@ -1,5 +1,6 @@
 """Run with: python -m unittest discover -s tests -v"""
 import hashlib
+import atexit
 import os
 from pathlib import Path
 import sys
@@ -18,6 +19,9 @@ from engine import Options, Cancelled, export_file, page_count, selected_pages, 
 from main import MainWindow, STYLE
 
 app = QApplication.instance() or QApplication([])
+if not getattr(app,'_test_shutdown_registered',False):
+    atexit.register(app.shutdown)
+    app._test_shutdown_registered=True
 app.setStyle('Fusion')
 app.setStyleSheet(STYLE)
 

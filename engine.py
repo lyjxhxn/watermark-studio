@@ -9,7 +9,7 @@ import tempfile
 
 import pymupdf as fitz
 from PIL import Image, ImageOps
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, Qt
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath
 from image_watermarks import ImageWatermark, image_geometry, load_images
 
@@ -142,8 +142,13 @@ def watermark(image, options, dpi, image_assets=None):
             if not mark.enabled:
                 continue
             picture = assets[mark.uid]
+            rect = image_geometry(mark, result.width(), result.height(), picture)
+            painter.save()
             painter.setOpacity(mark.opacity / 100)
-            painter.drawImage(image_geometry(mark, result.width(), result.height(), picture), picture)
+            painter.translate(rect.center())
+            painter.rotate(mark.rotation)
+            painter.drawImage(QRectF(-rect.width()/2,-rect.height()/2,rect.width(),rect.height()), picture)
+            painter.restore()
     finally:
         painter.end()
     return result

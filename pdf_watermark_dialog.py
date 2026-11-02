@@ -42,7 +42,7 @@ class PdfWatermarkDialog(QDialog):
         self.preview_label.setMinimumSize(400,340)
         self.preview_label.setStyleSheet('background: #e9edf4; border-radius: 8px; padding: 10px;')
         layout.addWidget(self.preview_label,1)
-        self.hint = QLabel('所选页面将作为一个水印添加，可拖动、缩放并调整透明度。')
+        self.hint = QLabel('所选页面将作为一个水印添加，可移动、缩放、旋转并调整透明度。')
         self.hint.setWordWrap(True)
         layout.addWidget(self.hint)
         buttons = QDialogButtonBox()

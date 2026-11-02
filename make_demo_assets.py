@@ -42,6 +42,7 @@ def create_demo(path):
 
 def generate():
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    owns_app=QApplication.instance() is None
     app = QApplication.instance() or QApplication([])
     configure_appearance(app)
     configure_language(app)
@@ -68,8 +69,8 @@ def generate():
         drawing.text((58,155),'仅供演示',font=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',34),fill=(205,85,105,235))
         seal.save(folder/'示例图章.png')
         window.add_watermark_images([str(folder/'示例徽标.png'),str(folder/'示例图章.png')])
-        window.image_marks = [replace(window.image_marks[0],center_x=.83,center_y=.79,width_ratio=.15,opacity=90),
-                              replace(window.image_marks[1],center_x=.80,center_y=.16,width_ratio=.19,opacity=95)]
+        window.image_marks = [replace(window.image_marks[0],center_x=.83,center_y=.75,width_ratio=.15,opacity=90,rotation=-18),
+                              replace(window.image_marks[1],center_x=.80,center_y=.16,width_ratio=.19,opacity=95,rotation=8)]
         window.reload_images(window.image_marks[0].uid)
         window.folder_edit.setText('请选择输出文件夹')
         window.status.setText('演示界面  ·  所有文件内容均为生成的示例。')
@@ -79,6 +80,7 @@ def generate():
         app.processEvents()
         window.grab().save(str(OUTPUT / 'desktop.png'))
         window.grab().save(str(OUTPUT / 'image-watermarks.png'))
+        window.grab().save(str(OUTPUT / 'rotation-watermarks.png'))
         import pymupdf as fitz
         pdf_source = folder/'水印来源示例.pdf'
         with fitz.open() as document:
@@ -129,6 +131,8 @@ def generate():
         painter.end()
         swatches.save(str(OUTPUT / 'color-swatches.png'))
         window.close()
+    if owns_app:
+        app.shutdown()
     print('Generated shareable demo screenshots:', OUTPUT)
 
 

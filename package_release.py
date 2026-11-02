@@ -67,6 +67,7 @@ for filename, destination in [
     ('controls.png', '按钮样式预览.png'),
     ('color-swatches.png', '颜色图标预览.png'),
     ('image-watermarks.png', '图片水印预览.png'),
+    ('rotation-watermarks.png', '水印旋转预览.png'),
     ('pdf-page-picker.png', 'PDF水印选页预览.png'),
 ]:
     shutil.copy2(root / 'docs/images' / filename, release / destination)

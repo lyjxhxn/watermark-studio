@@ -551,6 +551,22 @@ class MainWindow(QMainWindow):
         self.image_opacity_spin.setToolTip('与图片原有的透明通道叠加；100% 保留原图透明效果。')
         self.image_opacity_spin.valueChanged.connect(lambda value: self.change_image_value('opacity', value))
         form.addRow('不透明度', self.image_opacity_spin)
+        rotation_row=QWidget()
+        rotation_layout=QHBoxLayout(rotation_row)
+        rotation_layout.setContentsMargins(0,0,0,0)
+        rotation_layout.setSpacing(5)
+        self.image_rotation_spin=QDoubleSpinBox()
+        self.image_rotation_spin.setRange(-180,180)
+        self.image_rotation_spin.setDecimals(1)
+        self.image_rotation_spin.setSuffix('°')
+        self.image_rotation_spin.setToolTip('正值顺时针旋转；也可拖动预览中的圆形旋转手柄。')
+        self.image_rotation_spin.valueChanged.connect(lambda value: self.change_image_value('rotation',value))
+        rotation_layout.addWidget(self.image_rotation_spin,1)
+        self.image_rotation_reset=QPushButton('归零')
+        self.image_rotation_reset.setObjectName('quiet')
+        self.image_rotation_reset.clicked.connect(lambda: self.change_image_value('rotation',0))
+        rotation_layout.addWidget(self.image_rotation_reset)
+        form.addRow('旋转角度',rotation_row)
         layout.addLayout(form)
         self.image_center_button = QPushButton('将所选图片居中')
         self.image_center_button.clicked.connect(self.center_image)
@@ -647,7 +663,7 @@ class MainWindow(QMainWindow):
     def sync_image_controls(self):
         mark = self.selected_image()
         valid = mark is not None and mark.uid in self.image_assets
-        for widget in [self.image_width_spin, self.image_opacity_spin, self.image_center_button]:
+        for widget in [self.image_width_spin, self.image_opacity_spin, self.image_rotation_spin, self.image_rotation_reset, self.image_center_button]:
             widget.setEnabled(valid)
         row = self.image_list.currentRow()
         self.image_remove_button.setEnabled(mark is not None)
@@ -656,18 +672,21 @@ class MainWindow(QMainWindow):
         if mark:
             self.image_width_spin.blockSignals(True)
             self.image_opacity_spin.blockSignals(True)
+            self.image_rotation_spin.blockSignals(True)
             width = mark.width_ratio
             if valid and self.canvas.background_item is not None:
                 page = self.canvas.sceneRect()
                 width = image_geometry(mark, page.width(), page.height(), self.image_assets[mark.uid]).width()/page.width()
             self.image_width_spin.setValue(width * 100)
             self.image_opacity_spin.setValue(mark.opacity)
+            self.image_rotation_spin.setValue(mark.rotation)
             self.image_width_spin.blockSignals(False)
             self.image_opacity_spin.blockSignals(False)
+            self.image_rotation_spin.blockSignals(False)
         if mark and mark.uid in self.image_errors:
             self.image_hint.setText(self.image_errors[mark.uid])
         else:
-            self.image_hint.setText('在预览中拖动位置、拉动四角等比缩放。布局统一应用到选定页和批量文件，图片会自动保存到本机。')
+            self.image_hint.setText('拖动水印移动，拉动四角等比缩放，拖动圆形手柄旋转。按住 Shift 每 15° 吸附。布局统一应用到选定页和批量文件。')
 
     def images_changed(self):
         self.canvas.update_layers(self.image_marks, self.image_assets, self.selected_image_uid())
@@ -689,10 +708,11 @@ class MainWindow(QMainWindow):
         self.image_marks = [replace(mark, **{field: value}) if mark.uid == uid else mark for mark in self.image_marks]
         self.images_changed()
 
-    def image_geometry_changed(self, uid, x, y, width):
+    def image_geometry_changed(self, uid, x, y, width, rotation=None):
         if self.worker:
             return
-        self.image_marks = [replace(mark, center_x=x, center_y=y, width_ratio=width) if mark.uid == uid else mark for mark in self.image_marks]
+        self.image_marks = [replace(mark, center_x=x, center_y=y, width_ratio=width,
+                                   rotation=mark.rotation if rotation is None else rotation) if mark.uid == uid else mark for mark in self.image_marks]
         self.sync_image_controls()
         self.save_timer.start()
 
@@ -933,7 +953,7 @@ class MainWindow(QMainWindow):
             self.preview_image = preview(source, self.page_spin.value() - 1, options, include_images=False)
             allowed = Path(source).suffix.lower() != '.pdf' or self.page_spin.value()-1 in selected_pages(options.pages, item.data(Qt.ItemDataRole.UserRole)['count'])
             self.canvas.set_page(self.preview_image, self.image_marks, self.image_assets, allowed, self.selected_image_uid())
-            note = '拖动图片移动，拉动四角等比缩放。' if allowed else '此页不在水印页码范围内，无法编辑水印。'
+            note = '拖动水印移动，拉动四角缩放，拖动圆形手柄旋转。' if allowed else '此页不在水印页码范围内，无法编辑水印。'
             if self.image_errors:
                 note = '部分水印副本缺失或损坏，请在“图片 / PDF”页移除后重新添加。'
             self.preview_info.setText(f'{Path(source).name}  ·  第 {self.page_spin.value()} 页\n{note}')
@@ -1136,6 +1156,8 @@ def main():
                 window.add_watermark_images([str(logo_source),str(logo_source)])
                 window.text_enabled.setChecked(False)
                 window.image_geometry_changed(window.image_marks[0].uid,.7,.3,.3)
+                window.image_rotation_spin.setValue(31)
+                assert window.image_marks[0].rotation == 31
                 window.refresh_preview()
                 assert len(window.canvas.overlays) == 2
                 assert APP_VERSION in window.windowTitle()
@@ -1165,7 +1187,9 @@ def main():
                 QTimer.singleShot(150,choose_pdf_page)
                 window.add_watermark_images([str(pdf_source)])
                 assert not picker_errors and '第 2 页' in window.image_marks[0].name
+                window.image_rotation_spin.setValue(-23.5)
                 window.refresh_preview()
+                assert window.canvas.overlays[window.image_marks[0].uid].rotation() == -23.5
                 pdf_output = export_file(pdf_source, folder / 'output', window.get_options())
                 with fitz.open(pdf_output) as doc:
                     assert len(doc) == 2
@@ -1203,10 +1227,15 @@ def main():
         return app.exec()
     finally:
         instance.close()
+        window.save_timer.stop()
+        window.preview_timer.stop()
         window.canvas.show_message('')
+        # Release widgets while QApplication and Python callbacks are still
+        # alive, rather than relying on interpreter-finalization ordering.
+        window.close()
+        from shiboken6 import delete
+        delete(window)
         if smoke_context:
-            window.save_timer.stop()
-            window.preview_timer.stop()
             smoke_context.cleanup()
 
 

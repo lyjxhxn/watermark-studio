@@ -1,5 +1,7 @@
 from dataclasses import asdict, replace
 import json
+import atexit
+import math
 from pathlib import Path
 import sys
 import tempfile
@@ -10,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pymupdf as fitz
 from PIL import Image, ImageDraw, ImageChops
 from PySide6.QtCore import Qt, QSettings, QPointF, QTimer, QRectF
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QImage, QPainter, QTransform
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -21,6 +23,9 @@ from version import APP_VERSION
 from pdf_watermark_dialog import PdfWatermarkDialog
 
 app = QApplication.instance() or QApplication([])
+if not getattr(app,'_test_shutdown_registered',False):
+    atexit.register(app.shutdown)
+    app._test_shutdown_registered=True
 configure_appearance(app)
 configure_language(app)
 
@@ -117,7 +122,7 @@ class ImageWatermarkTests(unittest.TestCase):
     def test_preview_scene_and_export_pixels_match(self):
         window = self.window()
         window.add_files([str(self.source)])
-        window.apply_options(replace(self.options,image_watermarks=(replace(self.mark,center_x=.72,center_y=.43,width_ratio=.313,opacity=67),)))
+        window.apply_options(replace(self.options,image_watermarks=(replace(self.mark,center_x=.72,center_y=.43,width_ratio=.313,opacity=67,rotation=37),)))
         window.refresh_preview()
         window.canvas.set_editable(False)
         page = window.canvas.sceneRect()
@@ -218,6 +223,7 @@ class ImageWatermarkTests(unittest.TestCase):
         window.add_watermark_images([str(self.logo),str(self.logo)])
         window.text_enabled.setChecked(False)
         window.change_image_value('opacity',55)
+        window.change_image_value('rotation',23.5)
         window.image_geometry_changed(window.selected_image_uid(),.7,.4,.3)
         window.save_settings()
         cached = window.image_marks[0].asset_path
@@ -227,6 +233,7 @@ class ImageWatermarkTests(unittest.TestCase):
         self.assertEqual(len(reopened.image_marks),2)
         self.assertFalse(reopened.text_enabled.isChecked())
         self.assertEqual(reopened.image_marks[0].opacity,55)
+        self.assertEqual(reopened.image_marks[0].rotation,23.5)
         self.assertEqual(reopened.image_marks[0].center_x,.7)
         Path(cached).unlink()
         reopened.reload_images()
@@ -306,6 +313,123 @@ class ImageWatermarkTests(unittest.TestCase):
             rect = item.mapRectToScene(item.boundingRect())
             self.assertGreaterEqual(rect.left(),-1e-6)
             self.assertLessEqual(rect.right(),1000+1e-6)
+
+    def test_rotated_geometry_and_clockwise_pixels(self):
+        picture=QImage(self.mark.asset_path)
+        for angle in [0,37,90,-55,180,-179.5]:
+            mark=replace(self.mark,rotation=angle,width_ratio=.95,center_x=.99,center_y=.01)
+            for width,height in [(1000,600),(400,800),(400,120)]:
+                rect=image_geometry(mark,width,height,picture)
+                transform=QTransform()
+                transform.translate(rect.center().x(),rect.center().y())
+                transform.rotate(angle)
+                bounds=transform.mapRect(QRectF(-rect.width()/2,-rect.height()/2,rect.width(),rect.height()))
+                self.assertGreaterEqual(bounds.left(),-1e-6)
+                self.assertGreaterEqual(bounds.top(),-1e-6)
+                self.assertLessEqual(bounds.right(),width+1e-6)
+                self.assertLessEqual(bounds.bottom(),height+1e-6)
+        source=self.root/'direction.png'
+        image=Image.new('RGBA',(100,50),'red')
+        ImageDraw.Draw(image).rectangle((50,0,99,49),fill='#00ff00')
+        image.save(source)
+        mark=replace(self.cache.import_image(source),rotation=90)
+        result=watermark(self.page_image,replace(self.options,image_watermarks=(mark,)),100)
+        self.assertEqual(result.pixelColor(500,260).name(),'#ff0000')
+        self.assertEqual(result.pixelColor(500,340).name(),'#00ff00')
+        self.assertEqual(result.pixelColor(420,300).name(),'#ffffff')
+
+    def test_rotation_handle_rotated_resize_and_reset(self):
+        window=self.window()
+        window.add_files([str(self.source)])
+        window.add_watermark_images([str(self.logo)])
+        window.text_enabled.setChecked(False)
+        window.refresh_preview()
+        window.preview_timer.stop()
+        canvas=window.canvas
+        uid=window.selected_image_uid()
+        item=canvas.overlays[uid]
+        _,handle=canvas.rotation_handle_points(item)
+        center=item.mapToScene(QPointF(item.width/2,item.height/2))
+        vector=handle-center
+        start=canvas.mapFromScene(handle)
+        end=canvas.mapFromScene(center+QPointF(-vector.y(),vector.x()))
+        self.assertIs(canvas.rotation_handle_at(start),item)
+        with patch('main.preview',wraps=preview) as renderer:
+            QTest.mousePress(canvas.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
+            QTest.mouseMove(canvas.viewport(),end,30)
+            QTest.mouseRelease(canvas.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,end)
+            self.assertAlmostEqual(window.image_marks[0].rotation,90,delta=2)
+            self.assertEqual(renderer.call_count,0)
+        window.image_rotation_spin.setValue(37)
+        self.assertEqual(window.image_marks[0].rotation,37)
+        for corner,signs in enumerate([(-1,-1),(1,-1),(1,1),(-1,1)]):
+            window.center_image()
+            window.change_image_value('width_ratio',.2)
+            item=canvas.overlays[uid]
+            anchor=item.handles[(corner+2)%4].scenePos()
+            before=item.width
+            point=item.handles[corner].scenePos()
+            delta=item.mapToScene(QPointF(signs[0]*30,signs[1]*30))-item.mapToScene(QPointF())
+            start=canvas.mapFromScene(point)
+            end=canvas.mapFromScene(point+delta)
+            QTest.mousePress(canvas.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
+            QTest.mouseMove(canvas.viewport(),end,30)
+            QTest.mouseRelease(canvas.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,end)
+            self.assertGreater(item.width,before)
+            self.assertAlmostEqual(item.width/item.height,2)
+            self.assertLess(math.hypot((item.handles[(corner+2)%4].scenePos()-anchor).x(),(item.handles[(corner+2)%4].scenePos()-anchor).y()),1e-5)
+            self.assertAlmostEqual(window.image_marks[0].rotation,37)
+        window.image_rotation_reset.click()
+        self.assertEqual(window.image_marks[0].rotation,0)
+        item=canvas.overlays[uid]
+        _,handle=canvas.rotation_handle_points(item)
+        center=item.mapToScene(QPointF(item.width/2,item.height/2))
+        vector=handle-center
+        item.begin_rotate(handle)
+        angle=math.radians(17)
+        item.rotate_to(center+QPointF(vector.x()*math.cos(angle)-vector.y()*math.sin(angle),
+                                     vector.x()*math.sin(angle)+vector.y()*math.cos(angle)),snap=True)
+        self.assertEqual(window.image_marks[0].rotation,15)
+        item.begin_rotate(canvas.rotation_handle_points(item)[1])
+        start_width=item.width
+        item.rotate_to(canvas.rotation_handle_points(item)[1])
+        self.assertAlmostEqual(item.width,start_width)
+
+    def test_rotation_pdf_export_and_legacy_defaults(self):
+        mark=replace(self.cache.import_pdf(self.pdf,0),rotation=-32,width_ratio=.65,center_x=.85,center_y=.85)
+        options=replace(self.options,image_watermarks=(mark,))
+        output=export_file(self.pdf,self.root/'rotated-export',options)
+        with fitz.open(self.pdf) as original,fitz.open(output) as document:
+            for index,page in enumerate(document):
+                images=page.get_images(full=True)
+                self.assertEqual(len(images),1)
+                self.assertEqual(images[0][1],0)
+                expected=watermark(pdf_image(original[index],100),options,100).convertToFormat(QImage.Format.Format_RGB888)
+                self.assertEqual(fitz.Pixmap(document,images[0][0]).samples,fitz.Pixmap(png_bytes(expected)).samples)
+        record=asdict(self.mark)
+        record.pop('rotation')
+        legacy=options_from_dict({'image_watermarks':[record]})
+        self.assertEqual(legacy.image_watermarks[0].rotation,0)
+
+    def test_large_rotated_resize_on_portrait_page_stays_valid(self):
+        source=self.root/'portrait.png'
+        Image.new('RGB',(300,1000),'white').save(source)
+        window=self.window()
+        window.add_files([str(source)])
+        window.add_watermark_images([str(self.logo)])
+        window.refresh_preview()
+        window.image_rotation_spin.setValue(90)
+        item=window.canvas.overlays[window.selected_image_uid()]
+        item.begin_resize(2)
+        target=item.anchor+item.resize_u*10000+item.resize_v*5000
+        item.resize_to(target)
+        self.assertLessEqual(window.image_marks[0].width_ratio,1)
+        self.assertEqual(window.image_marks[0].rotation,90)
+        bounds=item.mapRectToScene(item.boundingRect())
+        self.assertGreaterEqual(bounds.left(),-1e-6)
+        self.assertGreaterEqual(bounds.top(),-1e-6)
+        self.assertLessEqual(bounds.right(),300+1e-6)
+        self.assertLessEqual(bounds.bottom(),1000+1e-6)
 
 
 if __name__ == '__main__':

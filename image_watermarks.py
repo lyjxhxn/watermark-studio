@@ -24,14 +24,15 @@ class ImageWatermark:
     width_ratio: float = 0.2
     opacity: int = 100
     enabled: bool = True
+    rotation: float = 0.0
 
     def __post_init__(self):
-        values = (self.center_x, self.center_y, self.width_ratio, self.opacity)
+        values = (self.center_x, self.center_y, self.width_ratio, self.opacity, self.rotation)
         if not all(isinstance(v, (float, int)) and math.isfinite(v) for v in values):
             raise ValueError('图片水印的位置或大小无效。')
         if not (0 <= self.center_x <= 1 and 0 <= self.center_y <= 1 and
-                0 < self.width_ratio <= 1 and 1 <= self.opacity <= 100):
-            raise ValueError('图片水印的位置、大小或透明度超出范围。')
+                0 < self.width_ratio <= 1 and 1 <= self.opacity <= 100 and -180 <= self.rotation <= 180):
+            raise ValueError('水印的位置、大小、透明度或旋转角度超出范围。')
         if not isinstance(self.asset_path, str) or not isinstance(self.uid, str) or not self.uid:
             raise ValueError('图片水印记录无效。')
 
@@ -49,15 +50,23 @@ def load_images(marks):
     return {mark.uid: read_image(mark) for mark in marks if mark.enabled}
 
 
+def rotated_size(width, height, rotation):
+    angle = math.radians(rotation)
+    cosine, sine = abs(math.cos(angle)), abs(math.sin(angle))
+    return width*cosine + height*sine, width*sine + height*cosine
+
+
 def image_geometry(mark, page_width, page_height, image):
     """Shared normalized placement, always fitted and clamped inside the page."""
     width = page_width * mark.width_ratio
     height = width * image.height() / image.width()
-    fit = min(1.0, page_width / width, page_height / height)
+    bound_width, bound_height = rotated_size(width,height,mark.rotation)
+    fit = min(1.0, page_width / bound_width, page_height / bound_height)
     width, height = width * fit, height * fit
-    x = min(max(mark.center_x * page_width - width / 2, 0), max(0, page_width - width))
-    y = min(max(mark.center_y * page_height - height / 2, 0), max(0, page_height - height))
-    return QRectF(x, y, width, height)
+    bound_width, bound_height = bound_width*fit, bound_height*fit
+    center_x = min(max(mark.center_x*page_width,bound_width/2),page_width-bound_width/2)
+    center_y = min(max(mark.center_y*page_height,bound_height/2),page_height-bound_height/2)
+    return QRectF(center_x-width/2, center_y-height/2, width, height)
 
 
 class AssetCache:
